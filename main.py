@@ -71,7 +71,7 @@ if "admin_selected_id" not in st.session_state:
 
 # 💡 사이드바 좌측 상단 로고 안전하게 불러오기
 logo_found = False
-for logo_name in ["logo.png", "logo.jpg", "로고.png", "로고.jpg", "디에이피 로고.png"]:
+for logo_name in ["Logo.png", "logo.jpg", "로고.png", "로고.jpg"]:
     if os.path.exists(logo_name):
         st.sidebar.image(logo_name, width=170)
         logo_found = True
