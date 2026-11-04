@@ -12,7 +12,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# 커스텀 CSS 적용 (토스/애플풍의 깔끔한 폰트, 여백, 카드 UI 스타일링)
 st.markdown("""
     <style>
     .stApp {
@@ -47,18 +46,27 @@ def load_data():
     if not os.path.exists(DATA_FILE):
         init_csv()
     df = pd.read_csv(DATA_FILE)
-    if "id" in df.columns and len(df) > 0:
-        df["id"] = df["id"].fillna(0).astype(int)
-    if "admin_reply" in df.columns:
-        df["admin_reply"] = df["admin_reply"].fillna("").astype(str)
-    else:
-        df["admin_reply"] = ""
-    for col in ["image_path", "before_images_json", "after_images_json", "before_desc", "after_desc"]:
+    
+    # 필수 컬럼 누락 방지 보정
+    expected_columns = [
+        "id", "timestamp", "type", "is_secret", 
+        "writer", "password", "title", "content", "status", "admin_reply", "image_path",
+        "before_images_json", "after_images_json", "before_desc", "after_desc"
+    ]
+    for col in expected_columns:
         if col not in df.columns:
             df[col] = ""
-        else:
-            df[col] = df[col].fillna("").astype(str)
+            
+    if len(df) > 0:
+        df["id"] = pd.to_numeric(df["id"], errors='coerce').fillna(0).astype(int)
+        
+    for col in ["admin_reply", "image_path", "before_images_json", "after_images_json", "before_desc", "after_desc"]:
+        df[col] = df[col].fillna("").astype(str)
+        
     return df
+
+def save_data(df):
+    df.to_csv(DATA_FILE, index=False)
 
 if "admin_logged_in" not in st.session_state:
     st.session_state["admin_logged_in"] = False
@@ -69,7 +77,7 @@ if "selected_request_id" not in st.session_state:
 if "admin_selected_id" not in st.session_state:
     st.session_state["admin_selected_id"] = None
 
-# 💡 사이드바 좌측 상단 로고 안전하게 불러오기
+# 로고 불러오기
 logo_found = False
 for logo_name in ["Logo.png", "logo.jpg", "로고.png", "로고.jpg"]:
     if os.path.exists(logo_name):
@@ -112,7 +120,7 @@ if menu == "📝 보건 요청 접수 및 조회":
             
             col1, col2 = st.columns(2)
             with col1:
-                writer_name = st.text_input("작성자 성명", placeholder="예: 홍길동")
+                writer_name = st.text_input("작성자 성명", placeholder="예: 박지혜")
             with col2:
                 password = st.text_input("비밀번호 (조회/비밀글용)", type="password", placeholder="숫자 4자리 등")
 
@@ -158,7 +166,7 @@ if menu == "📝 보건 요청 접수 및 조회":
                     }
                     
                     df = pd.concat([df, pd.DataFrame([new_data])], ignore_index=True)
-                    df.to_csv(DATA_FILE, index=False)
+                    save_data(df)
                     
                     st.success(f"✨ 요청이 성공적으로 접수되었습니다. (접수번호: No.{new_id})")
 
@@ -315,7 +323,8 @@ elif menu == "🔒 보건관리자 전용 모드":
         
         if len(df_admin) > 0:
             @st.cache_data
-            def convert_df_to_excel(df):
+            def convert_df_to_excel(df_json_str):
+                df = pd.read_json(df_json_str)
                 from openpyxl.drawing.image import Image as XLImage
                 from openpyxl.styles import Alignment, Border, Side
                 from openpyxl.utils import get_column_letter
@@ -324,18 +333,17 @@ elif menu == "🔒 보건관리자 전용 모드":
                 
                 report_rows = []
                 for _, r in df.iterrows():
-                    sec_str = "공개" if not r["is_secret"] else "비밀글"
+                    sec_str = "공개" if not r.get("is_secret", False) else "비밀글"
                     report_rows.append({
-                        "번호": r["id"],
-                        "일시": r["timestamp"],
+                        "번호": r.get("id", 0),
+                        "일시": r.get("timestamp", ""),
                         "공개여부": sec_str,
-                        "문의종류": r["type"],
-                        "작성자": r["writer"],
-                        "비밀글여부": sec_str,
-                        "제목": r["title"],
-                        "내용": r["content"],
-                        "처리단계": r["status"],
-                        "관리자답변": r["admin_reply"]
+                        "문의종류": r.get("type", ""),
+                        "작성자": r.get("writer", ""),
+                        "제목": r.get("title", ""),
+                        "내용": r.get("content", ""),
+                        "처리단계": r.get("status", ""),
+                        "관리자답변": r.get("admin_reply", "")
                     })
                 
                 df_report = pd.DataFrame(report_rows)
@@ -344,7 +352,6 @@ elif menu == "🔒 보건관리자 전용 모드":
                     df_report.to_excel(writer, index=False, sheet_name='보건개선사례보고서')
                     
                     worksheet = writer.sheets['보건개선사례보고서']
-                    
                     thin_border = Border(
                         left=Side(style='thin', color='000000'),
                         right=Side(style='thin', color='000000'),
@@ -360,10 +367,7 @@ elif menu == "🔒 보건관리자 전용 모드":
                         
                     for idx, row in df.iterrows():
                         base_row = idx + 2
-                        r1 = base_row
-                        r2 = base_row + 1
-                        r3 = base_row + 2
-                        r4 = base_row + 3
+                        r1, r2, r3, r4 = base_row, base_row + 1, base_row + 2, base_row + 3
                         
                         worksheet.row_dimensions[r1].height = 22
                         worksheet.row_dimensions[r2].height = 22
@@ -409,7 +413,6 @@ elif menu == "🔒 보건관리자 전용 모드":
                                 try:
                                     col_num = start_col_b_idx + img_idx
                                     col_let = get_column_letter(col_num)
-                                    
                                     name_cell = worksheet.cell(row=r2, column=col_num, value=f"개선 전 {img_idx+1}")
                                     name_cell.alignment = center_align
                                     name_cell.border = thin_border
@@ -423,7 +426,7 @@ elif menu == "🔒 보건관리자 전용 모드":
                                     desc_cell = worksheet.cell(row=r4, column=col_num, value=b_desc)
                                     desc_cell.alignment = center_align
                                     desc_cell.border = thin_border
-                                except Exception as e:
+                                except:
                                     pass
 
                         start_col_a_idx = start_col_b_idx + max(num_b, 2)
@@ -438,7 +441,6 @@ elif menu == "🔒 보건관리자 전용 모드":
                                 try:
                                     col_num = start_col_a_idx + img_idx
                                     col_let = get_column_letter(col_num)
-                                    
                                     name_cell = worksheet.cell(row=r2, column=col_num, value=f"개선후-{img_idx+1}")
                                     name_cell.alignment = center_align
                                     name_cell.border = thin_border
@@ -452,12 +454,12 @@ elif menu == "🔒 보건관리자 전용 모드":
                                     desc_cell = worksheet.cell(row=r4, column=col_num, value=a_desc)
                                     desc_cell.alignment = center_align
                                     desc_cell.border = thin_border
-                                except Exception as e:
+                                except:
                                     pass
                                     
                 return output.getvalue()
             
-            excel_data = convert_df_to_excel(df_admin)
+            excel_data = convert_df_to_excel(df_admin.to_json(date_format='iso'))
             
             st.download_button(
                 label="📥 엑셀(Excel) 보고서 다운로드",
@@ -620,14 +622,14 @@ elif menu == "🔒 보건관리자 전용 모드":
                                 df_save_admin.loc[target_idx, "before_images_json"] = json.dumps(existing_b_list)
                                 df_save_admin.loc[target_idx, "after_images_json"] = json.dumps(existing_a_list)
                                 
-                                df_save_admin.to_csv(DATA_FILE, index=False)
+                                save_data(df_save_admin)
                                 st.success("성공적으로 저장되었습니다.")
                                 st.rerun()
                             
                         if admin_del:
                             df_del_admin = load_data()
                             df_del_admin = df_del_admin[df_del_admin["id"] != int(current_admin_id)]
-                            df_del_admin.to_csv(DATA_FILE, index=False)
+                            save_data(df_del_admin)
                             st.warning("해당 건이 삭제되었습니다.")
                             st.rerun()
         else:
