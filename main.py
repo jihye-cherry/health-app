@@ -112,7 +112,7 @@ if menu == "📝 보건 요청 접수 및 조회":
             
             col1, col2 = st.columns(2)
             with col1:
-                writer_name = st.text_input("작성자 성명", placeholder="예: 박지혜")
+                writer_name = st.text_input("작성자 성명", placeholder="예: 홍길동")
             with col2:
                 password = st.text_input("비밀번호 (조회/비밀글용)", type="password", placeholder="숫자 4자리 등")
 
@@ -614,7 +614,7 @@ elif menu == "🔒 보건관리자 전용 모드":
                                         a_filename = f"after_{current_admin_id}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.{a_ext}"
                                         a_path = os.path.join(UPLOAD_DIR, a_filename)
                                         with open(a_path, "wb") as f:
-                                            f.write(af.get_budget() if hasattr(af, 'get_budget') else af.getbuffer())
+                                            f.write(af.getbuffer())
                                         existing_a_list.append(a_path)
                                 
                                 df_save_admin.loc[target_idx, "before_images_json"] = json.dumps(existing_b_list)
