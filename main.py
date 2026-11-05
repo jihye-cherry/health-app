@@ -5,7 +5,7 @@ from datetime import datetime
 import json
 from io import BytesIO
 
-# 1. 페이지 기본 설정
+# 1. 페이지 기본 설정 (애플/토스풍 미니멀 감성)
 st.set_page_config(
     page_title="사내 보건관리 & 고충 시스템",
     page_icon="🏥",
@@ -145,13 +145,14 @@ if menu == "📝 보건 요청 접수 및 조회":
                     saved_image_path = ""
                     if uploaded_file is not None:
                         file_ext = uploaded_file.name.split(".")[-1].lower()
-                        saved_filename = f"req_{new_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{file_ext}"
-                        saved_image_path = os.path.join(UPLOAD_DIR, saved_filename)
-                        try:
-                            with open(saved_image_path, "wb") as f:
-                                f.write(uploaded_file.getbuffer())
-                        except Exception:
-                            saved_image_path = ""
+                        if file_ext in ["jpg", "jpeg", "png"]:
+                            saved_filename = f"req_{new_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{file_ext}"
+                            saved_image_path = os.path.join(UPLOAD_DIR, saved_filename)
+                            try:
+                                with open(saved_image_path, "wb") as f:
+                                    f.write(uploaded_file.getbuffer())
+                            except Exception:
+                                saved_image_path = ""
                     
                     new_data = {
                         "id": new_id,
@@ -334,28 +335,18 @@ elif menu == "🔒 보건관리자 전용 모드":
         
         df_admin = load_data()
         st.markdown("#### 📊 보건 개선사례 보고서 추출")
-        st.caption("안전하고 깔끔하게 정리된 엑셀 보고서를 오류 없이 즉시 다운로드할 수 있습니다.")
+        st.caption("요청하신 서식(테두리 정돈 및 개선 전/후 이미지 포함) 그대로 정리된 엑셀 보고서를 추출합니다.")
         
         if len(df_admin) > 0:
             def convert_df_to_excel(df):
+                from openpyxl.drawing.image import Image as XLImage
+                from openpyxl.styles import Alignment, Border, Side, Font
+                from openpyxl.utils import get_column_letter
+
                 output = BytesIO()
                 report_rows = []
                 for _, r in df.iterrows():
                     sec_str = "공개" if str(r.get("is_secret", False)) != "True" else "비밀글"
-                    
-                    # 사진 파일 경로들을 텍스트로 깔끔하게 정리
-                    try:
-                        b_paths = json.loads(r.get("before_images_json", "[]"))
-                        b_text = f"{r.get('before_desc', '')} (사진: {', '.join(b_paths)})" if b_paths else r.get('before_desc', '')
-                    except Exception:
-                        b_text = r.get('before_desc', '')
-
-                    try:
-                        a_paths = json.loads(r.get("after_images_json", "[]"))
-                        a_text = f"{r.get('after_desc', '')} (사진: {', '.join(a_paths)})" if a_paths else r.get('after_desc', '')
-                    except Exception:
-                        a_text = r.get('after_desc', '')
-
                     report_rows.append({
                         "번호": r.get("id", 0),
                         "일시": r.get("timestamp", ""),
@@ -366,19 +357,86 @@ elif menu == "🔒 보건관리자 전용 모드":
                         "내용": r.get("content", ""),
                         "처리단계": r.get("status", ""),
                         "관리자답변": r.get("admin_reply", ""),
-                        "개선 전": b_text,
-                        "개선 후": a_text
+                        "개선 전": r.get("before_desc", ""),
+                        "개선 후": r.get("after_desc", "")
                     })
                 
                 df_report = pd.DataFrame(report_rows)
+                
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     df_report.to_excel(writer, index=False, sheet_name='보건개선사례보고서')
+                    worksheet = writer.sheets['보건개선사례보고서']
+                    
+                    thin_border = Border(
+                        left=Side(style='thin', color='000000'),
+                        right=Side(style='thin', color='000000'),
+                        top=Side(style='thin', color='000000'),
+                        bottom=Side(style='thin', color='000000')
+                    )
+                    center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                    header_font = Font(bold=True)
+                    
+                    for col_num in range(1, len(df_report.columns) + 1):
+                        cell = worksheet.cell(row=1, column=col_num)
+                        cell.alignment = center_align
+                        cell.border = thin_border
+                        cell.font = header_font
+                        
+                    worksheet.column_dimensions['A'].width = 8
+                    worksheet.column_dimensions['B'].width = 20
+                    worksheet.column_dimensions['C'].width = 10
+                    worksheet.column_dimensions['D'].width = 20
+                    worksheet.column_dimensions['E'].width = 10
+                    worksheet.column_dimensions['F'].width = 22
+                    worksheet.column_dimensions['G'].width = 30
+                    worksheet.column_dimensions['H'].width = 12
+                    worksheet.column_dimensions['I'].width = 25
+                    worksheet.column_dimensions['J'].width = 25
+                    worksheet.column_dimensions['K'].width = 25
+                    
+                    for idx, r in df.iterrows():
+                        row_num = idx + 2
+                        # 이미지가 예쁘게 들어갈 수 있도록 행 높이를 180으로 고정
+                        worksheet.row_dimensions[row_num].height = 180
+                        
+                        for c_idx in range(1, len(df_report.columns) + 1):
+                            cell = worksheet.cell(row=row_num, column=c_idx)
+                            cell.border = thin_border
+                            cell.alignment = Alignment(horizontal='center' if c_idx not in [6,7,9,10,11] else 'left', vertical='top', wrap_text=True)
+                        
+                        # [개선 전 사진 안전 삽입 - J열]
+                        try:
+                            b_paths = json.loads(r.get("before_images_json", "[]"))
+                            target_b = b_paths[0] if len(b_paths) > 0 else r.get("image_path", "")
+                            if target_b and os.path.exists(str(target_b)):
+                                ext = target_b.split(".")[-1].lower()
+                                if ext in ["jpg", "jpeg", "png"]:
+                                    img_b = XLImage(target_b)
+                                    img_b.width = 150
+                                    img_b.height = 150
+                                    worksheet.add_image(img_b, f"J{row_num}")
+                        except Exception:
+                            pass
+
+                        # [개선 후 사진 안전 삽입 - K열]
+                        try:
+                            a_paths = json.loads(r.get("after_images_json", "[]"))
+                            if len(a_paths) > 0 and os.path.exists(str(a_paths[0])):
+                                ext = a_paths[0].split(".")[-1].lower()
+                                if ext in ["jpg", "jpeg", "png"]:
+                                    img_a = XLImage(a_paths[0])
+                                    img_a.width = 150
+                                    img_a.height = 150
+                                    worksheet.add_image(img_a, f"K{row_num}")
+                        except Exception:
+                            pass
+
                 return output.getvalue()
             
             try:
                 excel_data = convert_df_to_excel(df_admin)
                 st.download_button(
-                    label="📥 엑셀(Excel) 보고서 다운로드",
+                    label="📥 엑셀(Excel) 보고서 다운로드 (이미지 서식 포함)",
                     data=excel_data,
                     file_name=f"보건개선사례보고서_{datetime.now().strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
