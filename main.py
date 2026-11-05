@@ -5,7 +5,7 @@ from datetime import datetime
 import json
 from io import BytesIO
 
-# 1. 페이지 기본 설정 (애플/토스풍 미니멀 감성)
+# 1. 페이지 기본 설정
 st.set_page_config(
     page_title="사내 보건관리 & 고충 시스템",
     page_icon="🏥",
@@ -45,7 +45,11 @@ init_csv()
 def load_data():
     if not os.path.exists(DATA_FILE):
         init_csv()
-    df = pd.read_csv(DATA_FILE)
+    try:
+        df = pd.read_csv(DATA_FILE)
+    except:
+        init_csv()
+        df = pd.read_csv(DATA_FILE)
     
     expected_columns = [
         "id", "timestamp", "type", "is_secret", 
@@ -143,8 +147,11 @@ if menu == "📝 보건 요청 접수 및 조회":
                         file_ext = uploaded_file.name.split(".")[-1]
                         saved_filename = f"req_{new_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{file_ext}"
                         saved_image_path = os.path.join(UPLOAD_DIR, saved_filename)
-                        with open(saved_image_path, "wb") as f:
-                            f.write(uploaded_file.getbuffer())
+                        try:
+                            with open(saved_image_path, "wb") as f:
+                                f.write(uploaded_file.getbuffer())
+                        except:
+                            saved_image_path = ""
                     
                     new_data = {
                         "id": new_id,
@@ -225,4 +232,45 @@ if menu == "📝 보건 요청 접수 및 조회":
                     pass_check = True
                     input_pw = ""
                     if is_target_secret and not st.session_state["admin_logged_in"]:
-                        input_pw = st.text_
+                        input_pw = st.text_input("🔒 비밀글입니다. 비밀번호를 입력해주세요.", type="password", key=f"pw_input_{current_selected_id}")
+                        if str(row_data["password"]) != str(input_pw):
+                            pass_check = False
+                            st.error("비밀번호가 일치하지 않습니다.")
+                    elif is_target_secret and st.session_state["admin_logged_in"]:
+                        st.info("🔓 [관리자 권한] 비밀글을 열람합니다.")
+
+                    if pass_check:
+                        display_writer = "익명 🔒" if is_target_secret and not st.session_state["admin_logged_in"] else row_data['writer']
+                        
+                        st.markdown(f"### 📌 [No.{row_data['id']}] {row_data['title']}")
+                        st.caption(f"분류: {row_data['type']} | 작성자: {display_writer} | 일시: {row_data['timestamp']} | 상태: **{row_data['status']}**")
+                        
+                        st.markdown("##### [문의 내용]")
+                        st.info(row_data['content'])
+                        
+                        img_path = str(row_data.get("image_path", ""))
+                        if img_path != "" and os.path.exists(img_path):
+                            try:
+                                st.image(img_path, caption="첨부 현장 사진", width=400)
+                            except:
+                                pass
+                        
+                        saved_reply = str(row_data["admin_reply"]).strip()
+                        if saved_reply != "" and saved_reply != "nan":
+                            st.success(f"🩺 **[보건관리자 조치 및 답변]**\n\n{saved_reply}")
+                        else:
+                            st.write("⏳ 현재 검토 및 조치 대기 중입니다.")
+        else:
+            st.write("등록된 접수 내역이 없습니다.")
+
+# ==========================================
+# [모드 2] 보건관리자 전용 모드
+# ==========================================
+elif menu == "🔒 보건관리자 전용 모드":
+    st.title("🩺 보건관리자 전용 대시보드")
+
+    if not st.session_state["admin_logged_in"]:
+        st.markdown("#### 🔐 관리자 인증")
+        admin_pw_input = st.text_input("관리자 비밀번호를 입력하세요", type="password")
+        if st.button("로그인", type="primary"):
+            if admin
