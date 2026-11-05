@@ -144,14 +144,15 @@ if menu == "📝 보건 요청 접수 및 조회":
                     
                     saved_image_path = ""
                     if uploaded_file is not None:
-                        file_ext = uploaded_file.name.split(".")[-1]
-                        saved_filename = f"req_{new_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{file_ext}"
-                        saved_image_path = os.path.join(UPLOAD_DIR, saved_filename)
-                        try:
-                            with open(saved_image_path, "wb") as f:
-                                f.write(uploaded_file.getbuffer())
-                        except Exception:
-                            saved_image_path = ""
+                        file_ext = uploaded_file.name.split(".")[-1].lower()
+                        if file_ext in ["jpg", "jpeg", "png"]:
+                            saved_filename = f"req_{new_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{file_ext}"
+                            saved_image_path = os.path.join(UPLOAD_DIR, saved_filename)
+                            try:
+                                with open(saved_image_path, "wb") as f:
+                                    f.write(uploaded_file.getbuffer())
+                            except Exception:
+                                saved_image_path = ""
                     
                     new_data = {
                         "id": new_id,
@@ -402,24 +403,30 @@ elif menu == "🔒 보건관리자 전용 모드":
                             cell.border = thin_border
                             cell.alignment = Alignment(horizontal='center' if c_idx not in [6,7,9,10,11] else 'left', vertical='top', wrap_text=True)
                         
+                        # [개선 전 사진 안전 삽입 (.mpo 등 에러 방지)]
                         try:
                             b_paths = json.loads(r.get("before_images_json", "[]"))
                             target_b = b_paths[0] if len(b_paths) > 0 else r.get("image_path", "")
                             if target_b and os.path.exists(str(target_b)):
-                                img_b = XLImage(target_b)
-                                img_b.width = 160
-                                img_b.height = 160
-                                worksheet.add_image(img_b, f"J{row_num}")
+                                ext = target_b.split(".")[-1].lower()
+                                if ext in ["jpg", "jpeg", "png"]:
+                                    img_b = XLImage(target_b)
+                                    img_b.width = 160
+                                    img_b.height = 160
+                                    worksheet.add_image(img_b, f"J{row_num}")
                         except Exception:
                             pass
 
+                        # [개선 후 사진 안전 삽입]
                         try:
                             a_paths = json.loads(r.get("after_images_json", "[]"))
                             if len(a_paths) > 0 and os.path.exists(str(a_paths[0])):
-                                img_a = XLImage(a_paths[0])
-                                img_a.width = 160
-                                img_a.height = 160
-                                worksheet.add_image(img_a, f"K{row_num}")
+                                ext = a_paths[0].split(".")[-1].lower()
+                                if ext in ["jpg", "jpeg", "png"]:
+                                    img_a = XLImage(a_paths[0])
+                                    img_a.width = 160
+                                    img_a.height = 160
+                                    worksheet.add_image(img_a, f"K{row_num}")
                         except Exception:
                             pass
 
@@ -580,27 +587,29 @@ elif menu == "🔒 보건관리자 전용 모드":
                                 
                                 if before_files:
                                     for bf in before_files:
-                                        b_ext = bf.name.split(".")[-1]
-                                        b_filename = f"before_{current_admin_id}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.{b_ext}"
-                                        b_path = os.path.join(UPLOAD_DIR, b_filename)
-                                        try:
-                                            with open(b_path, "wb") as f:
-                                                f.write(bf.getbuffer())
-                                            existing_b_list.append(b_path)
-                                        except Exception:
-                                            pass
+                                        b_ext = bf.name.split(".")[-1].lower()
+                                        if b_ext in ["jpg", "jpeg", "png"]:
+                                            b_filename = f"before_{current_admin_id}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.{b_ext}"
+                                            b_path = os.path.join(UPLOAD_DIR, b_filename)
+                                            try:
+                                                with open(b_path, "wb") as f:
+                                                    f.write(bf.getbuffer())
+                                                existing_b_list.append(b_path)
+                                            except Exception:
+                                                pass
                                 
                                 if after_files:
                                     for af in after_files:
-                                        a_ext = af.name.split(".")[-1]
-                                        a_filename = f"after_{current_admin_id}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.{a_ext}"
-                                        a_path = os.path.join(UPLOAD_DIR, a_filename)
-                                        try:
-                                            with open(a_path, "wb") as f:
-                                                f.write(af.getbuffer())
-                                            existing_a_list.append(a_path)
-                                        except Exception:
-                                            pass
+                                        a_ext = af.name.split(".")[-1].lower()
+                                        if a_ext in ["jpg", "jpeg", "png"]:
+                                            a_filename = f"after_{current_admin_id}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.{a_ext}"
+                                            a_path = os.path.join(UPLOAD_DIR, a_filename)
+                                            try:
+                                                with open(a_path, "wb") as f:
+                                                    f.write(af.getbuffer())
+                                                existing_a_list.append(a_path)
+                                            except Exception:
+                                                pass
                                 
                                 df_save_admin.loc[target_idx, "before_images_json"] = json.dumps(existing_b_list)
                                 df_save_admin.loc[target_idx, "after_images_json"] = json.dumps(existing_a_list)
