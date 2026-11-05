@@ -3,8 +3,10 @@ import pandas as pd
 import os
 from datetime import datetime
 import json
+import uuid
 from io import BytesIO
 from PIL import Image, ImageOps
+from supabase import create_client
 
 # 1. 페이지 기본 설정
 st.set_page_config(
@@ -26,29 +28,126 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-DATA_FILE = "health_requests.csv"
-UPLOAD_DIR = "uploads"
+# Supabase 설정
+TABLE_NAME = "health_requests"
+BUCKET_NAME = "health-uploads"
 
-if not os.path.exists(UPLOAD_DIR):
-    os.makedirs(UPLOAD_DIR)
+EXPECTED_COLUMNS = [
+    "id", "timestamp", "type", "is_secret",
+    "writer", "password", "title", "content", "status", "admin_reply", "image_path",
+    "before_images_json", "after_images_json", "before_desc", "after_desc"
+]
+
+@st.cache_resource
+def get_supabase():
+    """Streamlit Cloud Secrets에 등록한 Supabase 접속 정보를 사용합니다."""
+    try:
+        supabase_url = st.secrets["supabase"]["url"]
+        supabase_key = st.secrets["supabase"]["service_role_key"]
+    except Exception as e:
+        raise RuntimeError(
+            "Supabase 접속 정보가 없습니다. Streamlit Cloud의 앱 설정 > Secrets에 "
+            "[supabase], url, service_role_key가 등록되어 있는지 확인해주세요."
+        ) from e
+
+    return create_client(supabase_url, supabase_key)
+
+
+def to_bool(value):
+    """Supabase에서 불러온 공개/비밀글 값을 안전하게 True/False로 변환합니다."""
+    if value is True:
+        return True
+    if value is False or value is None:
+        return False
+    return str(value).strip().lower() in ["true", "1", "yes"]
+
+
+def clean_record(record):
+    """Supabase 테이블에 저장할 때 각 필드의 자료형을 정리합니다."""
+    cleaned = {}
+    for col in EXPECTED_COLUMNS:
+        value = record.get(col, "")
+        try:
+            if pd.isna(value):
+                value = None
+        except (TypeError, ValueError):
+            pass
+
+        if col == "id":
+            cleaned[col] = int(value) if value is not None and str(value).strip() else 0
+        elif col == "is_secret":
+            cleaned[col] = to_bool(value)
+        else:
+            cleaned[col] = "" if value is None else str(value)
+
+    return cleaned
+
+
+def save_record(record):
+    """새 접수 또는 관리자 수정 내용을 해당 접수번호 한 건만 저장합니다."""
+    cleaned = clean_record(record)
+    get_supabase().table(TABLE_NAME).upsert(
+        cleaned,
+        on_conflict="id"
+    ).execute()
+
+
+def delete_record(request_id):
+    """선택한 접수번호 한 건만 삭제합니다."""
+    get_supabase().table(TABLE_NAME).delete().eq("id", int(request_id)).execute()
 
 
 def save_uploaded_image(uploaded_file, filename_prefix):
-    """휴대폰 사진의 회전 정보를 보정하고 엑셀 호환 JPEG로 통일해 저장합니다."""
+    """휴대폰 사진의 회전 정보를 보정하고 JPEG로 변환해 Supabase Storage에 저장합니다."""
     try:
         uploaded_file.seek(0)
         with Image.open(uploaded_file) as source:
             source.seek(0)  # MPO 파일은 첫 번째 이미지 프레임 사용
             image = ImageOps.exif_transpose(source).convert("RGB")
-            filename = f"{filename_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
-            save_path = os.path.join(UPLOAD_DIR, filename)
-            image.save(save_path, format="JPEG", quality=90, optimize=True)
-        return save_path, None
+            buffer = BytesIO()
+            image.save(buffer, format="JPEG", quality=90, optimize=True)
+
+        object_path = f"{filename_prefix}/{uuid.uuid4().hex}.jpg"
+        get_supabase().storage.from_(BUCKET_NAME).upload(
+            object_path,
+            buffer.getvalue(),
+            file_options={
+                "content-type": "image/jpeg",
+                "upsert": "true"
+            }
+        )
+        # DB에는 실제 파일 경로 대신 Supabase Storage 경로를 기록합니다.
+        return f"supabase://{object_path}", None
     except Exception as e:
         return "", str(e)
 
+
+def get_image_bytes(image_path):
+    """Supabase Storage 또는 기존 로컬 경로에서 사진 데이터를 가져옵니다."""
+    if image_path is None:
+        return None
+
+    path = str(image_path).strip()
+    if not path or path.lower() == "nan":
+        return None
+
+    try:
+        if path.startswith("supabase://"):
+            object_path = path[len("supabase://"):]
+            return get_supabase().storage.from_(BUCKET_NAME).download(object_path)
+
+        # 기존 로컬 사진 경로가 남아 있는 경우를 위한 호환 처리
+        if os.path.isfile(path):
+            with open(path, "rb") as image_file:
+                return image_file.read()
+    except Exception:
+        return None
+
+    return None
+
+
 def load_image_paths(value):
-    """CSV에 저장된 사진 경로 목록을 안전하게 읽습니다."""
+    """DB에 저장된 사진 경로 목록(JSON)을 안전하게 읽습니다."""
     if value is None:
         return []
     if isinstance(value, list):
@@ -61,7 +160,7 @@ def load_image_paths(value):
     try:
         parsed = json.loads(raw_value)
     except (json.JSONDecodeError, TypeError):
-        return [raw_value] if os.path.isfile(raw_value) else []
+        return [raw_value] if raw_value.startswith("supabase://") or os.path.isfile(raw_value) else []
 
     if isinstance(parsed, list):
         return [str(path) for path in parsed if path]
@@ -69,45 +168,26 @@ def load_image_paths(value):
         return [parsed]
     return []
 
-def init_csv():
-    if not os.path.exists(DATA_FILE):
-        df_init = pd.DataFrame(columns=[
-            "id", "timestamp", "type", "is_secret", 
-            "writer", "password", "title", "content", "status", "admin_reply", "image_path",
-            "before_images_json", "after_images_json", "before_desc", "after_desc"
-        ])
-        df_init.to_csv(DATA_FILE, index=False)
-
-init_csv()
 
 def load_data():
-    if not os.path.exists(DATA_FILE):
-        init_csv()
-    try:
-        df = pd.read_csv(DATA_FILE)
-    except Exception:
-        init_csv()
-        df = pd.read_csv(DATA_FILE)
-    
-    expected_columns = [
-        "id", "timestamp", "type", "is_secret", 
-        "writer", "password", "title", "content", "status", "admin_reply", "image_path",
-        "before_images_json", "after_images_json", "before_desc", "after_desc"
-    ]
-    for col in expected_columns:
+    """Supabase 데이터베이스에서 접수 내역을 불러옵니다."""
+    response = get_supabase().table(TABLE_NAME).select("*").order("id").execute()
+    df = pd.DataFrame(response.data or [])
+
+    for col in EXPECTED_COLUMNS:
         if col not in df.columns:
             df[col] = ""
-            
-    if len(df) > 0:
-        df["id"] = pd.to_numeric(df["id"], errors='coerce').fillna(0).astype(int)
-        
-    for col in ["admin_reply", "image_path", "before_images_json", "after_images_json", "before_desc", "after_desc"]:
-        df[col] = df[col].fillna("").astype(str)
-        
-    return df
 
-def save_data(df):
-    df.to_csv(DATA_FILE, index=False)
+    if len(df) > 0:
+        df["id"] = pd.to_numeric(df["id"], errors="coerce").fillna(0).astype(int)
+
+    for col in EXPECTED_COLUMNS:
+        if col not in ["id", "is_secret"]:
+            df[col] = df[col].fillna("").astype(str)
+
+    df["is_secret"] = df["is_secret"].apply(to_bool)
+    return df[EXPECTED_COLUMNS]
+
 
 if "admin_logged_in" not in st.session_state:
     st.session_state["admin_logged_in"] = False
@@ -117,6 +197,13 @@ if "selected_request_id" not in st.session_state:
 
 if "admin_selected_id" not in st.session_state:
     st.session_state["admin_selected_id"] = None
+
+# Supabase 접속 확인
+try:
+    get_supabase()
+except Exception as e:
+    st.error(f"데이터베이스 연결 오류: {e}")
+    st.stop()
 
 # 로고 불러오기
 logo_found = False
@@ -144,11 +231,11 @@ if st.session_state["admin_logged_in"]:
 if menu == "📝 보건 요청 접수 및 조회":
     st.title("🏥 사내 보건 요청 & 고충 창구")
     st.markdown("임직원 여러분의 안전하고 건강한 근무 환경을 위해 언제든 의견을 남겨주세요.")
-    
+
     st.divider()
-    
+
     tab1, tab2 = st.tabs(["📝 새로운 요청 접수", "📋 전체 접수 및 처리 현황"])
-    
+
     with tab1:
         st.markdown("#### ✍️ 고충 및 개선 요청 작성")
         # 유형 선택은 폼 바깥에 두어 건강상담 선택 즉시 비밀글 설정이 반영되게 합니다.
@@ -174,7 +261,7 @@ if menu == "📝 보건 요청 접수 및 조회":
                 key="request_secret_checkbox",
                 disabled=is_health_request
             )
-            
+
             col1, col2 = st.columns(2)
             with col1:
                 writer_name = st.text_input("작성자 성명", placeholder="예: 박지혜")
@@ -187,9 +274,9 @@ if menu == "📝 보건 요청 접수 및 조회":
 
             title = st.text_input("제목", placeholder="간결하고 명확한 제목을 입력해주세요.")
             content = st.text_area("상세 내용", placeholder="현장 위치, 필요한 물품, 불편 사항 등을 상세히 적어주세요.")
-            
+
             uploaded_file = st.file_uploader("📸 현장 사진 첨부 (선택)", type=["jpg", "jpeg", "png", "mpo"])
-            
+
             submitted = st.form_submit_button("요청 제출하기", type="primary")
 
             if submitted:
@@ -199,7 +286,7 @@ if menu == "📝 보건 요청 접수 및 조회":
                     df = load_data()
                     new_id = int(df["id"].max()) + 1 if len(df) > 0 and not df["id"].empty else 1
                     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    
+
                     saved_image_path = ""
                     if uploaded_file is not None:
                         saved_image_path, image_error = save_uploaded_image(uploaded_file, f"req_{new_id}")
@@ -227,25 +314,26 @@ if menu == "📝 보건 요청 접수 및 조회":
                         "before_desc": "",
                         "after_desc": ""
                     }
-                    
-                    df = pd.concat([df, pd.DataFrame([new_data])], ignore_index=True)
-                    save_data(df)
-                    
-                    st.success(f"✨ 요청이 성공적으로 접수되었습니다. (접수번호: No.{new_id})")
+
+                    try:
+                        save_record(new_data)
+                        st.success(f"✨ 요청이 성공적으로 접수되었습니다. (접수번호: No.{new_id})")
+                    except Exception as e:
+                        st.error(f"요청 저장 중 오류가 발생했습니다: {e}")
 
     with tab2:
         st.markdown("#### 📋 실시간 접수 및 조치 현황")
         st.caption("아래 표에서 항목을 클릭하시면 상세 내용과 조치 결과를 확인하실 수 있습니다.")
-        
+
         df_list = load_data()
         if len(df_list) > 0:
             display_df = df_list[["id", "timestamp", "type", "writer", "title", "status"]].copy()
-            
+
             for idx, row in df_list.iterrows():
-                if str(row["is_secret"]) == "True" and not st.session_state["admin_logged_in"]:
+                if to_bool(row["is_secret"]) and not st.session_state["admin_logged_in"]:
                     display_df.at[idx, "writer"] = "익명 🔒"
                     display_df.at[idx, "title"] = "🔒 비밀글입니다. (권한 필요)"
-            
+
             display_df = display_df.rename(columns={
                 "id": "번호",
                 "timestamp": "일시",
@@ -254,9 +342,9 @@ if menu == "📝 보건 요청 접수 및 조회":
                 "title": "제목",
                 "status": "처리단계"
             })
-            
+
             sorted_df = display_df.sort_values(by="번호", ascending=False).reset_index(drop=True)
-            
+
             event = st.dataframe(
                 sorted_df,
                 use_container_width=True,
@@ -264,7 +352,7 @@ if menu == "📝 보건 요청 접수 및 조회":
                 on_select="rerun",
                 key="clean_table_grid"
             )
-            
+
             selected_id = None
             selection_rows = event.selection.get("rows", [])
             if len(selection_rows) > 0:
@@ -273,9 +361,9 @@ if menu == "📝 보건 요청 접수 및 조회":
 
             st.divider()
             st.markdown("#### 🔍 상세 내용 및 피드백 확인")
-            
+
             current_selected_id = selected_id if selected_id else st.session_state["selected_request_id"]
-            
+
             if not current_selected_id:
                 st.info("👆 위 표에서 확인할 항목의 체크박스를 선택해주세요.")
             else:
@@ -284,8 +372,8 @@ if menu == "📝 보건 요청 접수 및 조회":
                     st.warning("해당 내역을 찾을 수 없습니다.")
                 else:
                     row_data = target_rows.iloc[0]
-                    is_target_secret = str(row_data["is_secret"]) == "True"
-                    
+                    is_target_secret = to_bool(row_data["is_secret"])
+
                     is_health_detail = str(row_data.get("type", "")) == "건강상담 신청"
                     pass_check = True
                     input_pw = ""
@@ -302,60 +390,57 @@ if menu == "📝 보건 요청 접수 및 조회":
 
                     if pass_check:
                         display_writer = "익명 🔒" if is_target_secret and not st.session_state["admin_logged_in"] else row_data['writer']
-                        
+
                         st.markdown(f"### 📌 [No.{row_data['id']}] {row_data['title']}")
                         st.caption(f"분류: {row_data['type']} | 작성자: {display_writer} | 일시: {row_data['timestamp']} | 상태: **{row_data['status']}**")
-                        
+
                         st.markdown("##### [문의 내용]")
                         st.info(row_data['content'])
-                        
+
                         img_path = str(row_data.get("image_path", ""))
-                        if img_path != "" and os.path.exists(img_path):
+                        img_bytes = get_image_bytes(img_path)
+                        if img_bytes:
                             try:
-                                st.image(img_path, caption="첨부 현장 사진", width=400)
+                                st.image(img_bytes, caption="첨부 현장 사진", width=400)
                             except Exception:
                                 pass
-                        
-                        try:
-                            b_list = json.loads(row_data.get("before_images_json", "[]"))
-                        except Exception:
-                            b_list = []
-                        try:
-                            a_list = json.loads(row_data.get("after_images_json", "[]"))
-                        except Exception:
-                            a_list = []
-                        
+
+                        b_list = load_image_paths(row_data.get("before_images_json", "[]"))
+                        a_list = load_image_paths(row_data.get("after_images_json", "[]"))
+
                         b_desc = str(row_data.get("before_desc", ""))
                         a_desc = str(row_data.get("after_desc", ""))
-                        
+
                         if len(b_list) > 0 or len(a_list) > 0 or b_desc != "" or a_desc != "":
                             st.markdown("---")
                             st.markdown("##### 📸 개선 전·후 비교 내역")
                             col_bi, col_ai = st.columns(2)
-                            
+
                             with col_bi:
                                 st.markdown("**[개선 전]**")
                                 if len(b_list) > 0:
                                     cols_b = st.columns(min(len(b_list), 3))
                                     for idx_b, bp in enumerate(b_list):
-                                        if os.path.exists(bp):
+                                        before_bytes = get_image_bytes(bp)
+                                        if before_bytes:
                                             with cols_b[idx_b % len(cols_b)]:
                                                 try:
-                                                    st.image(bp, caption=f"전-{idx_b+1}", use_container_width=True)
+                                                    st.image(before_bytes, caption=f"전-{idx_b+1}", use_container_width=True)
                                                 except Exception:
                                                     pass
                                 if b_desc != "":
                                     st.warning(f"💡 **조치 필요 사항:**\n{b_desc}")
-                                    
+
                             with col_ai:
                                 st.markdown("**[개선 후]**")
                                 if len(a_list) > 0:
                                     cols_a = st.columns(min(len(a_list), 3))
                                     for idx_a, ap in enumerate(a_list):
-                                        if os.path.exists(ap):
+                                        after_bytes = get_image_bytes(ap)
+                                        if after_bytes:
                                             with cols_a[idx_a % len(cols_a)]:
                                                 try:
-                                                    st.image(ap, caption=f"후-{idx_a+1}", use_container_width=True)
+                                                    st.image(after_bytes, caption=f"후-{idx_a+1}", use_container_width=True)
                                                 except Exception:
                                                     pass
                                 if a_desc != "":
@@ -390,23 +475,23 @@ elif menu == "🔒 보건관리자 전용 모드":
         if st.button("로그아웃"):
             st.session_state["admin_logged_in"] = False
             st.rerun()
-            
+
         st.divider()
-        
+
         df_admin = load_data()
         st.markdown("#### 📊 보건 개선사례 보고서 추출")
         st.caption("관리자 전용 보고서입니다. 건강상담 신청자의 이름과 신청 내용은 표시하고, 실제 상담 기록 및 상담 사진은 포함하지 않습니다.")
-        
+
         if len(df_admin) > 0:
             def convert_df_to_excel(df):
                 from openpyxl.drawing.image import Image as XLImage
-                from openpyxl.styles import Alignment, Border, Side, Font, PatternFill
+                from openpyxl.styles import Alignment, Border, Side, Font
 
                 output = BytesIO()
                 report_rows = []
                 for _, r in df.iterrows():
                     is_health = str(r.get("type", "")) == "건강상담 신청"
-                    is_secret_value = str(r.get("is_secret", False)).strip().lower() in ["true", "1", "yes"]
+                    is_secret_value = to_bool(r.get("is_secret", False))
                     if is_health:
                         # 관리자 전용 엑셀에는 상담 신청 정보만 표시하고 실제 상담 기록은 포함하지 않습니다.
                         report_rows.append({
@@ -469,10 +554,13 @@ elif menu == "🔒 보건관리자 전용 모드":
                     worksheet.row_dimensions[1].height = 24
 
                     def add_report_image(image_path, cell_address):
-                        if not image_path or not os.path.exists(str(image_path)):
+                        if not image_path:
                             return
                         try:
-                            with Image.open(str(image_path)) as source_image:
+                            image_data = get_image_bytes(image_path)
+                            if not image_data:
+                                return
+                            with Image.open(BytesIO(image_data)) as source_image:
                                 source_image.seek(0)
                                 normalized = ImageOps.exif_transpose(source_image).convert("RGB")
                                 normalized.thumbnail((150, 150))
@@ -526,12 +614,12 @@ elif menu == "🔒 보건관리자 전용 모드":
                     st.warning("일부 사진을 엑셀에 넣지 못했습니다: " + " / ".join(excel_image_warnings[:5]))
             except Exception as e:
                 st.error(f"엑셀 생성 중 오류 발생: {e}")
-            
+
             st.divider()
-            
+
             st.markdown("#### 🛠️ 전체 고충 처리 및 관리")
             st.caption("표에서 항목을 선택하여 답변 작성, 처리 단계 변경, 개선 전·후 사진 등록을 진행하세요.")
-            
+
             display_admin_df = df_admin[["id", "timestamp", "type", "writer", "title", "status"]].copy()
             display_admin_df = display_admin_df.rename(columns={
                 "id": "번호",
@@ -541,9 +629,9 @@ elif menu == "🔒 보건관리자 전용 모드":
                 "title": "제목",
                 "status": "처리단계"
             })
-            
+
             sorted_admin_df = display_admin_df.sort_values(by="번호", ascending=False).reset_index(drop=True)
-            
+
             admin_event = st.dataframe(
                 sorted_admin_df,
                 use_container_width=True,
@@ -551,42 +639,37 @@ elif menu == "🔒 보건관리자 전용 모드":
                 on_select="rerun",
                 key="admin_table_grid"
             )
-            
+
             admin_selected_id = None
             admin_selection_rows = admin_event.selection.get("rows", [])
             if len(admin_selection_rows) > 0:
                 admin_selected_row_idx = admin_selection_rows[0]
                 admin_selected_id = int(sorted_admin_df.iloc[admin_selected_row_idx]["번호"])
-            
+
             current_admin_id = admin_selected_id if admin_selected_id else st.session_state["admin_selected_id"]
-            
+
             if not current_admin_id:
                 st.info("👆 위 표에서 관리할 항목의 체크박스를 선택해주세요.")
             else:
                 target_rows_admin = df_admin[df_admin["id"] == int(current_admin_id)]
                 if len(target_rows_admin) > 0:
                     target_row = target_rows_admin.iloc[0]
-                    
+
                     st.markdown(f"### 📌 [No.{target_row['id']}] {target_row['title']}")
                     st.caption(f"작성자: {target_row['writer']} ({target_row['timestamp']}) | 분류: {target_row['type']}")
                     st.info(f"**[요청 내용]**\n\n{target_row['content']}")
-                    
+
                     img_path_admin = str(target_row.get("image_path", ""))
-                    if img_path_admin != "" and os.path.exists(img_path_admin):
+                    img_bytes_admin = get_image_bytes(img_path_admin)
+                    if img_bytes_admin:
                         try:
-                            st.image(img_path_admin, caption="첨부된 현장 사진", width=400)
+                            st.image(img_bytes_admin, caption="첨부된 현장 사진", width=400)
                         except Exception:
                             pass
 
-                    try:
-                        b_list_curr = json.loads(target_row.get("before_images_json", "[]"))
-                    except Exception:
-                        b_list_curr = []
-                    try:
-                        a_list_curr = json.loads(target_row.get("after_images_json", "[]"))
-                    except Exception:
-                        a_list_curr = []
-                    
+                    b_list_curr = load_image_paths(target_row.get("before_images_json", "[]"))
+                    a_list_curr = load_image_paths(target_row.get("after_images_json", "[]"))
+
                     b_desc_curr = str(target_row.get("before_desc", ""))
                     a_desc_curr = str(target_row.get("after_desc", ""))
 
@@ -599,10 +682,11 @@ elif menu == "🔒 보건관리자 전용 모드":
                             if len(b_list_curr) > 0:
                                 cb_cols = st.columns(min(len(b_list_curr), 3))
                                 for i, bp in enumerate(b_list_curr):
-                                    if os.path.exists(bp):
+                                    before_bytes_curr = get_image_bytes(bp)
+                                    if before_bytes_curr:
                                         with cb_cols[i % len(cb_cols)]:
                                             try:
-                                                st.image(bp, caption=f"전-{i+1}", use_container_width=True)
+                                                st.image(before_bytes_curr, caption=f"전-{i+1}", use_container_width=True)
                                             except Exception:
                                                 pass
                             if b_desc_curr != "":
@@ -612,10 +696,11 @@ elif menu == "🔒 보건관리자 전용 모드":
                             if len(a_list_curr) > 0:
                                 ca_cols = st.columns(min(len(a_list_curr), 3))
                                 for i, ap in enumerate(a_list_curr):
-                                    if os.path.exists(ap):
+                                    after_bytes_curr = get_image_bytes(ap)
+                                    if after_bytes_curr:
                                         with ca_cols[i % len(ca_cols)]:
                                             try:
-                                                st.image(ap, caption=f"후-{i+1}", use_container_width=True)
+                                                st.image(after_bytes_curr, caption=f"후-{i+1}", use_container_width=True)
                                             except Exception:
                                                 pass
                             if a_desc_curr != "":
@@ -628,20 +713,20 @@ elif menu == "🔒 보건관리자 전용 모드":
                         else:
                             status_list = ["접수완료", "처리중", "조치완료"]
                         status_index = status_list.index(current_status) if current_status in status_list else 0
-                        
+
                         new_status = st.selectbox("처리 단계 변경", status_list, index=status_index)
                         existing_reply_admin = str(target_row["admin_reply"]) if pd.notna(target_row["admin_reply"]) and str(target_row["admin_reply"]) != "nan" else ""
                         new_reply = st.text_area("관리자 답변 및 조치 내용 입력", value=existing_reply_admin)
-                        
+
                         st.divider()
                         st.markdown("##### 🛠️ 개선 전·후 사진 및 설명 등록/수정")
-                        
+
                         col_f1, col_f2 = st.columns(2)
                         with col_f1:
                             st.markdown("**[개선 전]**")
                             before_files = st.file_uploader("개선 전 사진 다중 업로드", type=["jpg", "jpeg", "png", "mpo"], accept_multiple_files=True, key=f"before_files_{current_admin_id}")
                             new_before_desc = st.text_area("개선 필요 사항 (문제점 입력)", value=b_desc_curr, key=f"b_desc_{current_admin_id}")
-                            
+
                         with col_f2:
                             st.markdown("**[개선 후]**")
                             after_files = st.file_uploader("개선 후 사진 다중 업로드", type=["jpg", "jpeg", "png", "mpo"], accept_multiple_files=True, key=f"after_files_{current_admin_id}")
@@ -652,7 +737,7 @@ elif menu == "🔒 보건관리자 전용 모드":
                             admin_save = st.form_submit_button("💾 변경사항 및 사진 저장", type="primary")
                         with col_s2:
                             admin_del = st.form_submit_button("🗑️ 이 건 삭제하기")
-                            
+
                         if admin_save:
                             df_save_admin = load_data()
                             target_idx = df_save_admin[df_save_admin["id"] == int(current_admin_id)].index
@@ -661,7 +746,7 @@ elif menu == "🔒 보건관리자 전용 모드":
                                 df_save_admin.loc[target_idx, "admin_reply"] = str(new_reply)
                                 df_save_admin.loc[target_idx, "before_desc"] = str(new_before_desc)
                                 df_save_admin.loc[target_idx, "after_desc"] = str(new_after_desc)
-                                
+
                                 try:
                                     existing_b_list = json.loads(df_save_admin.loc[target_idx, "before_images_json"].values[0])
                                 except Exception:
@@ -670,7 +755,7 @@ elif menu == "🔒 보건관리자 전용 모드":
                                     existing_a_list = json.loads(df_save_admin.loc[target_idx, "after_images_json"].values[0])
                                 except Exception:
                                     existing_a_list = []
-                                
+
                                 if before_files:
                                     for bf in before_files:
                                         b_path, b_error = save_uploaded_image(bf, f"before_{current_admin_id}")
@@ -678,7 +763,7 @@ elif menu == "🔒 보건관리자 전용 모드":
                                             existing_b_list.append(b_path)
                                         elif b_error:
                                             st.warning(f"개선 전 사진 저장 실패: {b_error}")
-                                
+
                                 if after_files:
                                     for af in after_files:
                                         a_path, a_error = save_uploaded_image(af, f"after_{current_admin_id}")
@@ -686,19 +771,24 @@ elif menu == "🔒 보건관리자 전용 모드":
                                             existing_a_list.append(a_path)
                                         elif a_error:
                                             st.warning(f"개선 후 사진 저장 실패: {a_error}")
-                                
+
                                 df_save_admin.loc[target_idx, "before_images_json"] = json.dumps(existing_b_list)
                                 df_save_admin.loc[target_idx, "after_images_json"] = json.dumps(existing_a_list)
-                                
-                                save_data(df_save_admin)
-                                st.success("성공적으로 저장되었습니다.")
-                                st.rerun()
-                            
+
+                                try:
+                                    updated_record = df_save_admin.loc[target_idx].iloc[0].to_dict()
+                                    save_record(updated_record)
+                                    st.success("성공적으로 저장되었습니다.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"변경사항 저장 중 오류가 발생했습니다: {e}")
+
                         if admin_del:
-                            df_del_admin = load_data()
-                            df_del_admin = df_del_admin[df_del_admin["id"] != int(current_admin_id)]
-                            save_data(df_del_admin)
-                            st.warning("해당 건이 삭제되었습니다.")
-                            st.rerun()
+                            try:
+                                delete_record(current_admin_id)
+                                st.warning("해당 건이 삭제되었습니다.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"삭제 중 오류가 발생했습니다: {e}")
         else:
             st.write("등록된 데이터가 없습니다.")
