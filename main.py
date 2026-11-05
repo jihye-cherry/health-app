@@ -46,16 +46,16 @@ def save_uploaded_image(uploaded_file, filename_prefix):
         return save_path, None
     except Exception as e:
         return "", str(e)
+
 def load_image_paths(value):
-    """저장된 사진 경로 목록을 읽습니다."""
+    """CSV에 저장된 사진 경로 목록을 안전하게 읽습니다."""
     if value is None:
         return []
-
     if isinstance(value, list):
         return [str(path) for path in value if path]
 
     raw_value = str(value).strip()
-    if not raw_value:
+    if not raw_value or raw_value.lower() == "nan":
         return []
 
     try:
@@ -65,11 +65,10 @@ def load_image_paths(value):
 
     if isinstance(parsed, list):
         return [str(path) for path in parsed if path]
-
     if isinstance(parsed, str) and parsed:
         return [parsed]
-
     return []
+
 def init_csv():
     if not os.path.exists(DATA_FILE):
         df_init = pd.DataFrame(columns=[
@@ -396,7 +395,7 @@ elif menu == "🔒 보건관리자 전용 모드":
         
         df_admin = load_data()
         st.markdown("#### 📊 보건 개선사례 보고서 추출")
-        st.caption("번호부터 개선 전·후 사진까지 지정된 11개 열로 정리해 보고서를 추출합니다. 건강상담의 상세 내용은 보고서에서 제외됩니다.")
+        st.caption("관리자 전용 보고서입니다. 건강상담 신청자의 이름과 신청 내용은 표시하고, 실제 상담 기록 및 상담 사진은 포함하지 않습니다.")
         
         if len(df_admin) > 0:
             def convert_df_to_excel(df):
@@ -409,16 +408,16 @@ elif menu == "🔒 보건관리자 전용 모드":
                     is_health = str(r.get("type", "")) == "건강상담 신청"
                     is_secret_value = str(r.get("is_secret", False)).strip().lower() in ["true", "1", "yes"]
                     if is_health:
-                        # 건강상담은 보고서에 상담 사유·상담 내용·실명·답변을 싣지 않습니다.
+                        # 관리자 전용 엑셀에는 상담 신청 정보만 표시하고 실제 상담 기록은 포함하지 않습니다.
                         report_rows.append({
                             "번호": r.get("id", 0),
                             "일시": r.get("timestamp", ""),
                             "공개여부": "비밀글",
                             "문의종류": "건강상담 신청",
-                            "작성자": "비공개",
-                            "제목": "",
-                            "내용": "",
-                            "처리단계": "상담완료" if str(r.get("status", "")) in ["상담완료", "조치완료"] else str(r.get("status", "")),
+                            "작성자": r.get("writer", ""),
+                            "제목": r.get("title", ""),
+                            "내용": r.get("content", ""),
+                            "처리단계": str(r.get("status", "")),
                             "관리자답변": "",
                             "개선 전": "",
                             "개선 후": ""
