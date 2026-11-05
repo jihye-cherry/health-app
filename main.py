@@ -4,6 +4,7 @@ import os
 from datetime import datetime
 import json
 from io import BytesIO
+from PIL import Image, ImageOps
 
 # 1. 페이지 기본 설정
 st.set_page_config(
@@ -30,6 +31,21 @@ UPLOAD_DIR = "uploads"
 
 if not os.path.exists(UPLOAD_DIR):
     os.makedirs(UPLOAD_DIR)
+
+
+def save_uploaded_image(uploaded_file, filename_prefix):
+    """휴대폰 사진의 회전 정보를 보정하고 엑셀 호환 JPEG로 통일해 저장합니다."""
+    try:
+        uploaded_file.seek(0)
+        with Image.open(uploaded_file) as source:
+            source.seek(0)  # MPO 파일은 첫 번째 이미지 프레임 사용
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            filename = f"{filename_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
+            save_path = os.path.join(UPLOAD_DIR, filename)
+            image.save(save_path, format="JPEG", quality=90, optimize=True)
+        return save_path, None
+    except Exception as e:
+        return "", str(e)
 
 def init_csv():
     if not os.path.exists(DATA_FILE):
@@ -113,24 +129,44 @@ if menu == "📝 보건 요청 접수 및 조회":
     
     with tab1:
         st.markdown("#### ✍️ 고충 및 개선 요청 작성")
+        # 유형 선택은 폼 바깥에 두어 건강상담 선택 즉시 비밀글 설정이 반영되게 합니다.
+        req_type = st.selectbox(
+            "요청 유형",
+            ["보호구 및 약품 신청", "작업환경 개선 요청", "건강상담 신청", "기타"],
+            key="request_type_select"
+        )
+        is_health_request = req_type == "건강상담 신청"
+        if "request_secret_checkbox" not in st.session_state:
+            st.session_state["request_secret_checkbox"] = False
+        if is_health_request:
+            st.session_state["request_secret_checkbox"] = True
+
         with st.form("request_form", clear_on_submit=True):
-            req_type = st.selectbox(
-                "요청 유형",
-                ["보호구 및 약품 신청", "작업환경 개선 요청", "건강상담 신청", "기타"]
+            secret_label = (
+                "🔒 건강상담 신청 (관리자 전용 비밀글)"
+                if is_health_request
+                else "🔒 비밀글 설정 (작성자 및 관리자만 열람 가능)"
             )
-            
-            is_secret = st.checkbox("🔒 비밀글 설정 (작성자 및 관리자만 열람 가능)")
+            is_secret = st.checkbox(
+                secret_label,
+                key="request_secret_checkbox",
+                disabled=is_health_request
+            )
             
             col1, col2 = st.columns(2)
             with col1:
                 writer_name = st.text_input("작성자 성명", placeholder="예: 박지혜")
             with col2:
-                password = st.text_input("비밀번호 (조회/비밀글용)", type="password", placeholder="숫자 4자리 등")
+                if is_health_request:
+                    st.caption("건강상담 신청은 비밀번호 없이 보건관리자만 확인할 수 있습니다.")
+                    password = ""
+                else:
+                    password = st.text_input("비밀번호 (조회/비밀글용)", type="password", placeholder="숫자 4자리 등")
 
             title = st.text_input("제목", placeholder="간결하고 명확한 제목을 입력해주세요.")
             content = st.text_area("상세 내용", placeholder="현장 위치, 필요한 물품, 불편 사항 등을 상세히 적어주세요.")
             
-            uploaded_file = st.file_uploader("📸 현장 사진 첨부 (선택)", type=["jpg", "jpeg", "png"])
+            uploaded_file = st.file_uploader("📸 현장 사진 첨부 (선택)", type=["jpg", "jpeg", "png", "mpo"])
             
             submitted = st.form_submit_button("요청 제출하기", type="primary")
 
@@ -144,23 +180,21 @@ if menu == "📝 보건 요청 접수 및 조회":
                     
                     saved_image_path = ""
                     if uploaded_file is not None:
-                        file_ext = uploaded_file.name.split(".")[-1].lower()
-                        if file_ext in ["jpg", "jpeg", "png"]:
-                            saved_filename = f"req_{new_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{file_ext}"
-                            saved_image_path = os.path.join(UPLOAD_DIR, saved_filename)
-                            try:
-                                with open(saved_image_path, "wb") as f:
-                                    f.write(uploaded_file.getbuffer())
-                            except Exception:
-                                saved_image_path = ""
-                    
+                        saved_image_path, image_error = save_uploaded_image(uploaded_file, f"req_{new_id}")
+                        if image_error:
+                            st.warning(f"사진을 저장하지 못했습니다: {image_error}")
+
+                    # 건강상담은 유형 자체로 비밀글을 강제하고, 신청자 비밀번호 없이 관리자만 열람합니다.
+                    is_secret = True if is_health_request else bool(is_secret)
+                    saved_password = "" if is_health_request else str(password)
+
                     new_data = {
                         "id": new_id,
                         "timestamp": now_str,
                         "type": req_type,
                         "is_secret": is_secret,
                         "writer": writer_name,
-                        "password": str(password),
+                        "password": saved_password,
                         "title": title,
                         "content": content,
                         "status": "접수완료",
@@ -230,9 +264,13 @@ if menu == "📝 보건 요청 접수 및 조회":
                     row_data = target_rows.iloc[0]
                     is_target_secret = str(row_data["is_secret"]) == "True"
                     
+                    is_health_detail = str(row_data.get("type", "")) == "건강상담 신청"
                     pass_check = True
                     input_pw = ""
-                    if is_target_secret and not st.session_state["admin_logged_in"]:
+                    if is_health_detail and not st.session_state["admin_logged_in"]:
+                        pass_check = False
+                        st.warning("🔒 건강상담 신청 내역은 보건관리자만 확인할 수 있습니다.")
+                    elif is_target_secret and not st.session_state["admin_logged_in"]:
                         input_pw = st.text_input("🔒 비밀글입니다. 비밀번호를 입력해주세요.", type="password", key=f"pw_input_{current_selected_id}")
                         if str(row_data["password"]) != str(input_pw):
                             pass_check = False
@@ -335,105 +373,126 @@ elif menu == "🔒 보건관리자 전용 모드":
         
         df_admin = load_data()
         st.markdown("#### 📊 보건 개선사례 보고서 추출")
-        st.caption("비표준 포맷(.mpo 등)을 완벽히 차단하고 정돈된 서식으로 엑셀 보고서를 추출합니다.")
+        st.caption("번호부터 개선 전·후 사진까지 지정된 11개 열로 정리해 보고서를 추출합니다. 건강상담의 상세 내용은 보고서에서 제외됩니다.")
         
         if len(df_admin) > 0:
             def convert_df_to_excel(df):
                 from openpyxl.drawing.image import Image as XLImage
-                from openpyxl.styles import Alignment, Border, Side, Font
-                from openpyxl.utils import get_column_letter
+                from openpyxl.styles import Alignment, Border, Side, Font, PatternFill
 
                 output = BytesIO()
                 report_rows = []
                 for _, r in df.iterrows():
-                    sec_str = "공개" if str(r.get("is_secret", False)) != "True" else "비밀글"
-                    report_rows.append({
-                        "번호": r.get("id", 0),
-                        "일시": r.get("timestamp", ""),
-                        "공개여부": sec_str,
-                        "문의종류": r.get("type", ""),
-                        "작성자": r.get("writer", ""),
-                        "제목": r.get("title", ""),
-                        "내용": r.get("content", ""),
-                        "처리단계": r.get("status", ""),
-                        "관리자답변": r.get("admin_reply", ""),
-                        "개선 전": r.get("before_desc", ""),
-                        "개선 후": r.get("after_desc", "")
-                    })
-                
-                df_report = pd.DataFrame(report_rows)
-                
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    df_report.to_excel(writer, index=False, sheet_name='보건개선사례보고서')
-                    worksheet = writer.sheets['보건개선사례보고서']
-                    
+                    is_health = str(r.get("type", "")) == "건강상담 신청"
+                    is_secret_value = str(r.get("is_secret", False)).strip().lower() in ["true", "1", "yes"]
+                    if is_health:
+                        # 건강상담은 보고서에 상담 사유·상담 내용·실명·답변을 싣지 않습니다.
+                        report_rows.append({
+                            "번호": r.get("id", 0),
+                            "일시": r.get("timestamp", ""),
+                            "공개여부": "비밀글",
+                            "문의종류": "건강상담 신청",
+                            "작성자": "비공개",
+                            "제목": "",
+                            "내용": "",
+                            "처리단계": "상담완료" if str(r.get("status", "")) in ["상담완료", "조치완료"] else str(r.get("status", "")),
+                            "관리자답변": "",
+                            "개선 전": "",
+                            "개선 후": ""
+                        })
+                    else:
+                        report_rows.append({
+                            "번호": r.get("id", 0),
+                            "일시": r.get("timestamp", ""),
+                            "공개여부": "비밀글" if is_secret_value else "공개",
+                            "문의종류": r.get("type", ""),
+                            "작성자": r.get("writer", ""),
+                            "제목": r.get("title", ""),
+                            "내용": r.get("content", ""),
+                            "처리단계": r.get("status", ""),
+                            "관리자답변": r.get("admin_reply", ""),
+                            "개선 전": r.get("before_desc", ""),
+                            "개선 후": r.get("after_desc", "")
+                        })
+
+                columns = ["번호", "일시", "공개여부", "문의종류", "작성자", "제목", "내용", "처리단계", "관리자답변", "개선 전", "개선 후"]
+                df_report = pd.DataFrame(report_rows, columns=columns)
+                image_buffers = []  # 엑셀 파일 생성이 끝날 때까지 이미지 메모리 유지
+                image_warnings = []
+
+                with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                    df_report.to_excel(writer, index=False, sheet_name="보건개선사례보고서")
+                    worksheet = writer.sheets["보건개선사례보고서"]
+                    worksheet.freeze_panes = "A2"
+                    worksheet.auto_filter.ref = worksheet.dimensions
+
                     thin_border = Border(
-                        left=Side(style='thin', color='000000'),
-                        right=Side(style='thin', color='000000'),
-                        top=Side(style='thin', color='000000'),
-                        bottom=Side(style='thin', color='000000')
+                        left=Side(style="thin", color="000000"),
+                        right=Side(style="thin", color="000000"),
+                        top=Side(style="thin", color="000000"),
+                        bottom=Side(style="thin", color="000000")
                     )
-                    center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
                     header_font = Font(bold=True)
-                    
-                    for col_num in range(1, len(df_report.columns) + 1):
+                    center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+                    for col_num in range(1, len(columns) + 1):
                         cell = worksheet.cell(row=1, column=col_num)
                         cell.alignment = center_align
                         cell.border = thin_border
                         cell.font = header_font
-                        
-                    worksheet.column_dimensions['A'].width = 8
-                    worksheet.column_dimensions['B'].width = 20
-                    worksheet.column_dimensions['C'].width = 10
-                    worksheet.column_dimensions['D'].width = 20
-                    worksheet.column_dimensions['E'].width = 10
-                    worksheet.column_dimensions['F'].width = 22
-                    worksheet.column_dimensions['G'].width = 30
-                    worksheet.column_dimensions['H'].width = 12
-                    worksheet.column_dimensions['I'].width = 25
-                    worksheet.column_dimensions['J'].width = 25
-                    worksheet.column_dimensions['K'].width = 25
-                    
+
+                    widths = {"A": 8, "B": 20, "C": 10, "D": 20, "E": 10, "F": 22, "G": 30, "H": 12, "I": 25, "J": 25, "K": 25}
+                    for col_letter, width in widths.items():
+                        worksheet.column_dimensions[col_letter].width = width
+                    worksheet.row_dimensions[1].height = 24
+
+                    def add_report_image(image_path, cell_address):
+                        if not image_path or not os.path.exists(str(image_path)):
+                            return
+                        try:
+                            with Image.open(str(image_path)) as source_image:
+                                source_image.seek(0)
+                                normalized = ImageOps.exif_transpose(source_image).convert("RGB")
+                                normalized.thumbnail((150, 150))
+                                buffer = BytesIO()
+                                normalized.save(buffer, format="JPEG", quality=88, optimize=True)
+                                buffer.seek(0)
+                            excel_image = XLImage(buffer)
+                            excel_image.width = normalized.width
+                            excel_image.height = normalized.height
+                            worksheet.add_image(excel_image, cell_address)
+                            image_buffers.append(buffer)
+                        except Exception as image_error:
+                            image_warnings.append(f"{os.path.basename(str(image_path))}: {image_error}")
+
                     for idx, r in df.iterrows():
                         row_num = idx + 2
-                        worksheet.row_dimensions[row_num].height = 180
-                        
-                        for c_idx in range(1, len(df_report.columns) + 1):
+                        is_health = str(r.get("type", "")) == "건강상담 신청"
+                        worksheet.row_dimensions[row_num].height = 125
+
+                        for c_idx in range(1, len(columns) + 1):
                             cell = worksheet.cell(row=row_num, column=c_idx)
                             cell.border = thin_border
-                            cell.alignment = Alignment(horizontal='center' if c_idx not in [6,7,9,10,11] else 'left', vertical='top', wrap_text=True)
-                        
-                        # [개선 전 사진 안전 삽입 (.mpo 확장자 완전 필터링 및 무시)]
-                        try:
-                            b_paths = json.loads(r.get("before_images_json", "[]"))
-                            target_b = b_paths[0] if len(b_paths) > 0 else r.get("image_path", "")
-                            if target_b and os.path.exists(str(target_b)):
-                                ext = target_b.split(".")[-1].lower()
-                                if ext in ["jpg", "jpeg", "png"]: # mpo 등은 아예 걸러냄
-                                    img_b = XLImage(target_b)
-                                    img_b.width = 150
-                                    img_b.height = 150
-                                    worksheet.add_image(img_b, f"J{row_num}")
-                        except Exception:
-                            pass
+                            cell.alignment = Alignment(
+                                horizontal="center" if c_idx in [1, 2, 3, 4, 5, 8] else "left",
+                                vertical="top",
+                                wrap_text=True
+                            )
 
-                        # [개선 후 사진 안전 삽입 (.mpo 확장자 완전 필터링 및 무시)]
-                        try:
-                            a_paths = json.loads(r.get("after_images_json", "[]"))
-                            if len(a_paths) > 0 and os.path.exists(str(a_paths[0])):
-                                ext = a_paths[0].split(".")[-1].lower()
-                                if ext in ["jpg", "jpeg", "png"]: # mpo 등은 아예 걸러냄
-                                    img_a = XLImage(a_paths[0])
-                                    img_a.width = 150
-                                    img_a.height = 150
-                                    worksheet.add_image(img_a, f"K{row_num}")
-                        except Exception:
-                            pass
+                        # 건강상담 신청은 보고서에 상담 관련 사진을 넣지 않습니다.
+                        if not is_health:
+                            before_paths = load_image_paths(r.get("before_images_json", "[]"))
+                            target_before = before_paths[0] if before_paths else r.get("image_path", "")
+                            add_report_image(target_before, f"J{row_num}")
 
-                return output.getvalue()
-            
+                            after_paths = load_image_paths(r.get("after_images_json", "[]"))
+                            target_after = after_paths[0] if after_paths else ""
+                            add_report_image(target_after, f"K{row_num}")
+
+                return output.getvalue(), image_warnings
+
             try:
-                excel_data = convert_df_to_excel(df_admin)
+                excel_data, excel_image_warnings = convert_df_to_excel(df_admin)
                 st.download_button(
                     label="📥 엑셀(Excel) 보고서 다운로드 (이미지 서식 포함)",
                     data=excel_data,
@@ -441,6 +500,8 @@ elif menu == "🔒 보건관리자 전용 모드":
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="primary"
                 )
+                if excel_image_warnings:
+                    st.warning("일부 사진을 엑셀에 넣지 못했습니다: " + " / ".join(excel_image_warnings[:5]))
             except Exception as e:
                 st.error(f"엑셀 생성 중 오류 발생: {e}")
             
@@ -540,7 +601,10 @@ elif menu == "🔒 보건관리자 전용 모드":
 
                     with st.form(key=f"admin_mode_form_{current_admin_id}"):
                         current_status = target_row["status"]
-                        status_list = ["접수완료", "처리중", "조치완료"]
+                        if str(target_row.get("type", "")) == "건강상담 신청":
+                            status_list = ["접수완료", "상담예정", "상담완료"]
+                        else:
+                            status_list = ["접수완료", "처리중", "조치완료"]
                         status_index = status_list.index(current_status) if current_status in status_list else 0
                         
                         new_status = st.selectbox("처리 단계 변경", status_list, index=status_index)
@@ -553,12 +617,12 @@ elif menu == "🔒 보건관리자 전용 모드":
                         col_f1, col_f2 = st.columns(2)
                         with col_f1:
                             st.markdown("**[개선 전]**")
-                            before_files = st.file_uploader("개선 전 사진 다중 업로드", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key=f"before_files_{current_admin_id}")
+                            before_files = st.file_uploader("개선 전 사진 다중 업로드", type=["jpg", "jpeg", "png", "mpo"], accept_multiple_files=True, key=f"before_files_{current_admin_id}")
                             new_before_desc = st.text_area("개선 필요 사항 (문제점 입력)", value=b_desc_curr, key=f"b_desc_{current_admin_id}")
                             
                         with col_f2:
                             st.markdown("**[개선 후]**")
-                            after_files = st.file_uploader("개선 후 사진 다중 업로드", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key=f"after_files_{current_admin_id}")
+                            after_files = st.file_uploader("개선 후 사진 다중 업로드", type=["jpg", "jpeg", "png", "mpo"], accept_multiple_files=True, key=f"after_files_{current_admin_id}")
                             new_after_desc = st.text_area("개선 조치 내용 (결과 입력)", value=a_desc_curr, key=f"a_desc_{current_admin_id}")
 
                         col_s1, col_s2 = st.columns(2)
@@ -587,29 +651,19 @@ elif menu == "🔒 보건관리자 전용 모드":
                                 
                                 if before_files:
                                     for bf in before_files:
-                                        b_ext = bf.name.split(".")[-1].lower()
-                                        if b_ext in ["jpg", "jpeg", "png"]:
-                                            b_filename = f"before_{current_admin_id}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.{b_ext}"
-                                            b_path = os.path.join(UPLOAD_DIR, b_filename)
-                                            try:
-                                                with open(b_path, "wb") as f:
-                                                    f.write(bf.getbuffer())
-                                                existing_b_list.append(b_path)
-                                            except Exception:
-                                                pass
+                                        b_path, b_error = save_uploaded_image(bf, f"before_{current_admin_id}")
+                                        if b_path:
+                                            existing_b_list.append(b_path)
+                                        elif b_error:
+                                            st.warning(f"개선 전 사진 저장 실패: {b_error}")
                                 
                                 if after_files:
                                     for af in after_files:
-                                        a_ext = af.name.split(".")[-1].lower()
-                                        if a_ext in ["jpg", "jpeg", "png"]:
-                                            a_filename = f"after_{current_admin_id}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.{a_ext}"
-                                            a_path = os.path.join(UPLOAD_DIR, a_filename)
-                                            try:
-                                                with open(a_path, "wb") as f:
-                                                    f.write(af.getbuffer())
-                                                existing_a_list.append(a_path)
-                                            except Exception:
-                                                pass
+                                        a_path, a_error = save_uploaded_image(af, f"after_{current_admin_id}")
+                                        if a_path:
+                                            existing_a_list.append(a_path)
+                                        elif a_error:
+                                            st.warning(f"개선 후 사진 저장 실패: {a_error}")
                                 
                                 df_save_admin.loc[target_idx, "before_images_json"] = json.dumps(existing_b_list)
                                 df_save_admin.loc[target_idx, "after_images_json"] = json.dumps(existing_a_list)
