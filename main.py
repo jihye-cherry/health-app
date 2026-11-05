@@ -318,16 +318,11 @@ elif menu == "🔒 보건관리자 전용 모드":
         
         df_admin = load_data()
         st.markdown("#### 📊 보건 개선사례 보고서 추출")
-        st.caption("완벽하게 서식이 정리된 엑셀(Excel) 보고서 파일을 즉시 다운로드할 수 있습니다.")
+        st.caption("안전하고 깔끔하게 정리된 엑셀(Excel) 보고서 파일을 즉시 다운로드할 수 있습니다.")
         
         if len(df_admin) > 0:
             def convert_df_to_excel(df):
-                from openpyxl.drawing.image import Image as XLImage
-                from openpyxl.styles import Alignment, Border, Side
-                from openpyxl.utils import get_column_letter
-                
                 output = BytesIO()
-                
                 report_rows = []
                 for _, r in df.iterrows():
                     sec_str = "공개" if not r.get("is_secret", False) else "비밀글"
@@ -340,120 +335,14 @@ elif menu == "🔒 보건관리자 전용 모드":
                         "제목": r.get("title", ""),
                         "내용": r.get("content", ""),
                         "처리단계": r.get("status", ""),
-                        "관리자답변": r.get("admin_reply", "")
+                        "관리자답변": r.get("admin_reply", ""),
+                        "개선전설명": r.get("before_desc", ""),
+                        "개선후설명": r.get("after_desc", "")
                     })
                 
                 df_report = pd.DataFrame(report_rows)
-                
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     df_report.to_excel(writer, index=False, sheet_name='보건개선사례보고서')
-                    
-                    worksheet = writer.sheets['보건개선사례보고서']
-                    thin_border = Border(
-                        left=Side(style='thin', color='000000'),
-                        right=Side(style='thin', color='000000'),
-                        top=Side(style='thin', color='000000'),
-                        bottom=Side(style='thin', color='000000')
-                    )
-                    center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
-                    
-                    for col_num in range(1, len(df_report.columns) + 1):
-                        cell = worksheet.cell(row=1, column=col_num)
-                        cell.alignment = center_align
-                        cell.border = thin_border
-                        
-                    for idx, row in df.iterrows():
-                        base_row = idx + 2
-                        r1, r2, r3, r4 = base_row, base_row + 1, base_row + 2, base_row + 3
-                        
-                        worksheet.row_dimensions[r1].height = 22
-                        worksheet.row_dimensions[r2].height = 22
-                        worksheet.row_dimensions[r3].height = 265
-                        worksheet.row_dimensions[r4].height = 55
-                        
-                        for c_idx in range(1, len(df_report.columns) + 1):
-                            worksheet.merge_cells(start_row=r1, start_column=c_idx, end_row=r4, end_column=c_idx)
-                            cell = worksheet.cell(row=r1, column=c_idx)
-                            cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-                            
-                        for curr_r in [r1, r2, r3, r4]:
-                            for c_idx in range(1, 16):
-                                worksheet.cell(row=curr_r, column=c_idx).border = thin_border
-                        
-                        try:
-                            b_paths = json.loads(row.get("before_images_json", "[]"))
-                        except:
-                            b_paths = []
-                        try:
-                            a_paths = json.loads(row.get("after_images_json", "[]"))
-                        except:
-                            a_paths = []
-                        
-                        b_desc = row.get("before_desc", "")
-                        a_desc = row.get("after_desc", "")
-                        
-                        num_b = max(len(b_paths), 1)
-                        num_a = max(len(a_paths), 1)
-                        
-                        for col_let in ['K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R']:
-                            worksheet.column_dimensions[col_let].width = 30
-                        
-                        start_col_b_idx = 11
-                        end_col_b_idx = start_col_b_idx + num_b - 1
-                        
-                        worksheet.merge_cells(start_row=r1, start_column=start_col_b_idx, end_row=r1, end_column=end_col_b_idx)
-                        b_title_cell = worksheet.cell(row=r1, column=start_col_b_idx, value="[개선 전]")
-                        b_title_cell.alignment = center_align
-                        
-                        for img_idx, bp in enumerate(b_paths):
-                            if bp and os.path.exists(bp):
-                                try:
-                                    col_num = start_col_b_idx + img_idx
-                                    col_let = get_column_letter(col_num)
-                                    name_cell = worksheet.cell(row=r2, column=col_num, value=f"개선 전 {img_idx+1}")
-                                    name_cell.alignment = center_align
-                                    name_cell.border = thin_border
-                                    
-                                    img = XLImage(bp)
-                                    img.width = 250
-                                    img.height = 250
-                                    worksheet.add_image(img, f"{col_let}{r3}")
-                                    worksheet.cell(row=r3, column=col_num).border = thin_border
-                                    
-                                    desc_cell = worksheet.cell(row=r4, column=col_num, value=b_desc)
-                                    desc_cell.alignment = center_align
-                                    desc_cell.border = thin_border
-                                except:
-                                    pass
-
-                        start_col_a_idx = start_col_b_idx + max(num_b, 2)
-                        end_col_a_idx = start_col_a_idx + num_a - 1
-                        
-                        worksheet.merge_cells(start_row=r1, start_column=start_col_a_idx, end_row=r1, end_column=end_col_a_idx)
-                        a_title_cell = worksheet.cell(row=r1, column=start_col_a_idx, value="[개선 후]")
-                        a_title_cell.alignment = center_align
-                        
-                        for img_idx, ap in enumerate(a_paths):
-                            if ap and os.path.exists(ap):
-                                try:
-                                    col_num = start_col_a_idx + img_idx
-                                    col_let = get_column_letter(col_num)
-                                    name_cell = worksheet.cell(row=r2, column=col_num, value=f"개선후-{img_idx+1}")
-                                    name_cell.alignment = center_align
-                                    name_cell.border = thin_border
-                                    
-                                    img = XLImage(ap)
-                                    img.width = 250
-                                    img.height = 250
-                                    worksheet.add_image(img, f"{col_let}{r3}")
-                                    worksheet.cell(row=r3, column=col_num).border = thin_border
-                                    
-                                    desc_cell = worksheet.cell(row=r4, column=col_num, value=a_desc)
-                                    desc_cell.alignment = center_align
-                                    desc_cell.border = thin_border
-                                except:
-                                    pass
-                                    
                 return output.getvalue()
             
             excel_data = convert_df_to_excel(df_admin)
@@ -576,58 +465,3 @@ elif menu == "🔒 보건관리자 전용 모드":
                         
                         col_s1, col_s2 = st.columns(2)
                         with col_s1:
-                            admin_save = st.form_submit_button("💾 변경사항 저장", type="primary")
-                        with col_s2:
-                            admin_del = st.form_submit_button("🗑️ 이 건 삭제하기")
-                            
-                        if admin_save:
-                            df_save_admin = load_data()
-                            target_idx = df_save_admin[df_save_admin["id"] == int(current_admin_id)].index
-                            if len(target_idx) > 0:
-                                df_save_admin.loc[target_idx, "status"] = new_status
-                                df_save_admin.loc[target_idx, "admin_reply"] = str(new_reply)
-                                df_save_admin.loc[target_idx, "before_desc"] = str(new_before_desc)
-                                df_save_admin.loc[target_idx, "after_desc"] = str(new_after_desc)
-                                
-                                try:
-                                    existing_b_list = json.loads(df_save_admin.loc[target_idx, "before_images_json"].values[0])
-                                except:
-                                    existing_b_list = []
-                                try:
-                                    existing_a_list = json.loads(df_save_admin.loc[target_idx, "after_images_json"].values[0])
-                                except:
-                                    existing_a_list = []
-                                
-                                if before_files:
-                                    for bf in before_files:
-                                        b_ext = bf.name.split(".")[-1]
-                                        b_filename = f"before_{current_admin_id}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.{b_ext}"
-                                        b_path = os.path.join(UPLOAD_DIR, b_filename)
-                                        with open(b_path, "wb") as f:
-                                            f.write(bf.getbuffer())
-                                        existing_b_list.append(b_path)
-                                
-                                if after_files:
-                                    for af in after_files:
-                                        a_ext = af.name.split(".")[-1]
-                                        a_filename = f"after_{current_admin_id}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.{a_ext}"
-                                        a_path = os.path.join(UPLOAD_DIR, a_filename)
-                                        with open(a_path, "wb") as f:
-                                            f.write(af.getbuffer())
-                                        existing_a_list.append(a_path)
-                                
-                                df_save_admin.loc[target_idx, "before_images_json"] = json.dumps(existing_b_list)
-                                df_save_admin.loc[target_idx, "after_images_json"] = json.dumps(existing_a_list)
-                                
-                                save_data(df_save_admin)
-                                st.success("성공적으로 저장되었습니다.")
-                                st.rerun()
-                            
-                        if admin_del:
-                            df_del_admin = load_data()
-                            df_del_admin = df_del_admin[df_del_admin["id"] != int(current_admin_id)]
-                            save_data(df_del_admin)
-                            st.warning("해당 건이 삭제되었습니다.")
-                            st.rerun()
-        else:
-            st.write("등록된 데이터가 없습니다.")
