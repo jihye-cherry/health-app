@@ -273,4 +273,142 @@ elif menu == "🔒 보건관리자 전용 모드":
         st.markdown("#### 🔐 관리자 인증")
         admin_pw_input = st.text_input("관리자 비밀번호를 입력하세요", type="password")
         if st.button("로그인", type="primary"):
-            if admin
+            if admin_pw_input == "dap1234%":
+                st.session_state["admin_logged_in"] = True
+                st.success("로그인 성공!")
+                st.rerun()
+            else:
+                st.error("비밀번호가 올바르지 않습니다.")
+    else:
+        st.success("🔓 보건관리자 모드로 안전하게 접속되었습니다.")
+        if st.button("로그아웃"):
+            st.session_state["admin_logged_in"] = False
+            st.rerun()
+            
+        st.divider()
+        
+        df_admin = load_data()
+        st.markdown("#### 📊 보건 개선사례 보고서 추출")
+        st.caption("안전하고 깔끔하게 정리된 엑셀(Excel) 보고서 파일을 즉시 다운로드할 수 있습니다.")
+        
+        if len(df_admin) > 0:
+            def convert_df_to_excel(df):
+                output = BytesIO()
+                report_rows = []
+                for _, r in df.iterrows():
+                    sec_str = "공개" if not r.get("is_secret", False) else "비밀글"
+                    report_rows.append({
+                        "번호": r.get("id", 0),
+                        "일시": r.get("timestamp", ""),
+                        "공개여부": sec_str,
+                        "문의종류": r.get("type", ""),
+                        "작성자": r.get("writer", ""),
+                        "제목": r.get("title", ""),
+                        "내용": r.get("content", ""),
+                        "처리단계": r.get("status", ""),
+                        "관리자답변": r.get("admin_reply", ""),
+                        "개선전설명": r.get("before_desc", ""),
+                        "개선후설명": r.get("after_desc", "")
+                    })
+                
+                df_report = pd.DataFrame(report_rows)
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df_report.to_excel(writer, index=False, sheet_name='보건개선사례보고서')
+                return output.getvalue()
+            
+            try:
+                excel_data = convert_df_to_excel(df_admin)
+                st.download_button(
+                    label="📥 엑셀(Excel) 보고서 다운로드",
+                    data=excel_data,
+                    file_name=f"보건개선사례보고서_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary"
+                )
+            except Exception as e:
+                st.error(f"엑셀 생성 중 오류 발생: {e}")
+            
+            st.divider()
+            
+            st.markdown("#### 🛠️ 전체 고충 처리 및 관리")
+            st.caption("표에서 항목을 선택하여 답변 작성, 처리 단계 변경을 진행하세요.")
+            
+            display_admin_df = df_admin[["id", "timestamp", "type", "writer", "title", "status"]].copy()
+            display_admin_df = display_admin_df.rename(columns={
+                "id": "번호",
+                "timestamp": "일시",
+                "type": "문의종류",
+                "writer": "작성자",
+                "title": "제목",
+                "status": "처리단계"
+            })
+            
+            sorted_admin_df = display_admin_df.sort_values(by="번호", ascending=False).reset_index(drop=True)
+            
+            admin_event = st.dataframe(
+                sorted_admin_df,
+                use_container_width=True,
+                selection_mode="single-row",
+                on_select="rerun",
+                key="admin_table_grid"
+            )
+            
+            admin_selected_id = None
+            admin_selection_rows = admin_event.selection.get("rows", [])
+            if len(admin_selection_rows) > 0:
+                admin_selected_row_idx = admin_selection_rows[0]
+                admin_selected_id = int(sorted_admin_df.iloc[admin_selected_row_idx]["번호"])
+            
+            current_admin_id = admin_selected_id if admin_selected_id else st.session_state["admin_selected_id"]
+            
+            if not current_admin_id:
+                st.info("👆 위 표에서 관리할 항목의 체크박스를 선택해주세요.")
+            else:
+                target_rows_admin = df_admin[df_admin["id"] == int(current_admin_id)]
+                if len(target_rows_admin) > 0:
+                    target_row = target_rows_admin.iloc[0]
+                    
+                    st.markdown(f"### 📌 [No.{target_row['id']}] {target_row['title']}")
+                    st.caption(f"작성자: {target_row['writer']} ({target_row['timestamp']}) | 분류: {target_row['type']}")
+                    st.info(f"**[요청 내용]**\n\n{target_row['content']}")
+                    
+                    img_path_admin = str(target_row.get("image_path", ""))
+                    if img_path_admin != "" and os.path.exists(img_path_admin):
+                        try:
+                            st.image(img_path_admin, caption="첨부된 현장 사진", width=400)
+                        except:
+                            pass
+
+                    with st.form(key=f"admin_mode_form_{current_admin_id}"):
+                        current_status = target_row["status"]
+                        status_list = ["접수완료", "처리중", "조치완료"]
+                        status_index = status_list.index(current_status) if current_status in status_list else 0
+                        
+                        new_status = st.selectbox("처리 단계 변경", status_list, index=status_index)
+                        existing_reply_admin = str(target_row["admin_reply"]) if pd.notna(target_row["admin_reply"]) and str(target_row["admin_reply"]) != "nan" else ""
+                        new_reply = st.text_area("관리자 답변 및 조치 내용 입력", value=existing_reply_admin)
+                        
+                        col_s1, col_s2 = st.columns(2)
+                        with col_s1:
+                            admin_save = st.form_submit_button("💾 변경사항 저장", type="primary")
+                        with col_s2:
+                            admin_del = st.form_submit_button("🗑️ 이 건 삭제하기")
+                            
+                        if admin_save:
+                            df_save_admin = load_data()
+                            target_idx = df_save_admin[df_save_admin["id"] == int(current_admin_id)].index
+                            if len(target_idx) > 0:
+                                df_save_admin.loc[target_idx, "status"] = new_status
+                                df_save_admin.loc[target_idx, "admin_reply"] = str(new_reply)
+                                save_data(df_save_admin)
+                                st.success("성공적으로 저장되었습니다.")
+                                st.rerun()
+                            
+                        if admin_del:
+                            df_del_admin = load_data()
+                            df_del_admin = df_del_admin[df_del_admin["id"] != int(current_admin_id)]
+                            save_data(df_del_admin)
+                            st.warning("해당 건이 삭제되었습니다.")
+                            st.rerun()
+        else:
+            st.write("등록된 데이터가 없습니다.")
