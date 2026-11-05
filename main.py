@@ -335,7 +335,7 @@ elif menu == "🔒 보건관리자 전용 모드":
         
         df_admin = load_data()
         st.markdown("#### 📊 보건 개선사례 보고서 추출")
-        st.caption("요청하신 서식(테두리 정돈 및 개선 전/후 이미지 포함) 그대로 정리된 엑셀 보고서를 추출합니다.")
+        st.caption("요청하신 서식(테두리 정돈 및 안전한 이미지 삽입) 그대로 정리된 엑셀 보고서를 추출합니다[cite: 10].")
         
         if len(df_admin) > 0:
             def convert_df_to_excel(df):
@@ -396,7 +396,7 @@ elif menu == "🔒 보건관리자 전용 모드":
                     
                     for idx, r in df.iterrows():
                         row_num = idx + 2
-                        # 이미지가 예쁘게 들어갈 수 있도록 행 높이를 180으로 고정
+                        # 이미지가 예쁘게 들어갈 수 있도록 행 높이를 180으로 고정[cite: 10]
                         worksheet.row_dimensions[row_num].height = 180
                         
                         for c_idx in range(1, len(df_report.columns) + 1):
@@ -404,13 +404,13 @@ elif menu == "🔒 보건관리자 전용 모드":
                             cell.border = thin_border
                             cell.alignment = Alignment(horizontal='center' if c_idx not in [6,7,9,10,11] else 'left', vertical='top', wrap_text=True)
                         
-                        # [개선 전 사진 안전 삽입 - J열]
+                        # [개선 전 사진 안전 삽입 - J열 (.mpo 등 비표준 포맷 완전 차단)]
                         try:
                             b_paths = json.loads(r.get("before_images_json", "[]"))
                             target_b = b_paths[0] if len(b_paths) > 0 else r.get("image_path", "")
                             if target_b and os.path.exists(str(target_b)):
                                 ext = target_b.split(".")[-1].lower()
-                                if ext in ["jpg", "jpeg", "png"]:
+                                if ext in ["jpg", "jpeg", "png"]:  # 확실한 표준 포맷만 허용
                                     img_b = XLImage(target_b)
                                     img_b.width = 150
                                     img_b.height = 150
@@ -423,7 +423,7 @@ elif menu == "🔒 보건관리자 전용 모드":
                             a_paths = json.loads(r.get("after_images_json", "[]"))
                             if len(a_paths) > 0 and os.path.exists(str(a_paths[0])):
                                 ext = a_paths[0].split(".")[-1].lower()
-                                if ext in ["jpg", "jpeg", "png"]:
+                                if ext in ["jpg", "jpeg", "png"]:  # 확실한 표준 포맷만 허용
                                     img_a = XLImage(a_paths[0])
                                     img_a.width = 150
                                     img_a.height = 150
