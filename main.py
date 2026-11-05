@@ -46,7 +46,30 @@ def save_uploaded_image(uploaded_file, filename_prefix):
         return save_path, None
     except Exception as e:
         return "", str(e)
+def load_image_paths(value):
+    """저장된 사진 경로 목록을 읽습니다."""
+    if value is None:
+        return []
 
+    if isinstance(value, list):
+        return [str(path) for path in value if path]
+
+    raw_value = str(value).strip()
+    if not raw_value:
+        return []
+
+    try:
+        parsed = json.loads(raw_value)
+    except (json.JSONDecodeError, TypeError):
+        return [raw_value] if os.path.isfile(raw_value) else []
+
+    if isinstance(parsed, list):
+        return [str(path) for path in parsed if path]
+
+    if isinstance(parsed, str) and parsed:
+        return [parsed]
+
+    return []
 def init_csv():
     if not os.path.exists(DATA_FILE):
         df_init = pd.DataFrame(columns=[
