@@ -47,7 +47,6 @@ def load_data():
         init_csv()
     df = pd.read_csv(DATA_FILE)
     
-    # 필수 컬럼 누락 방지 보정
     expected_columns = [
         "id", "timestamp", "type", "is_secret", 
         "writer", "password", "title", "content", "status", "admin_reply", "image_path",
@@ -322,9 +321,7 @@ elif menu == "🔒 보건관리자 전용 모드":
         st.caption("완벽하게 서식이 정리된 엑셀(Excel) 보고서 파일을 즉시 다운로드할 수 있습니다.")
         
         if len(df_admin) > 0:
-            @st.cache_data
-            def convert_df_to_excel(df_json_str):
-                df = pd.read_json(df_json_str)
+            def convert_df_to_excel(df):
                 from openpyxl.drawing.image import Image as XLImage
                 from openpyxl.styles import Alignment, Border, Side
                 from openpyxl.utils import get_column_letter
@@ -459,7 +456,7 @@ elif menu == "🔒 보건관리자 전용 모드":
                                     
                 return output.getvalue()
             
-            excel_data = convert_df_to_excel(df_admin.to_json(date_format='iso'))
+            excel_data = convert_df_to_excel(df_admin)
             
             st.download_button(
                 label="📥 엑셀(Excel) 보고서 다운로드",
